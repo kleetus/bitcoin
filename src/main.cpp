@@ -2952,7 +2952,7 @@ bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, bool f
     return true;
 }
 
-bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bool fCheckMerkleRoot)
+bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckLegacyBlock)
 {
     // These are checks that are independent of context.
 
@@ -2985,7 +2985,7 @@ bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bo
     // because we receive the wrong transactions for it.
 
     // Size limits
-    unsigned int nMaxSize = MaxBlockSize(block.GetBlockTime());
+    unsigned int nMaxSize = MaxBlockSize(block.GetBlockTime(), fCheckLegacyBlock);
     if (block.vtx.empty() || block.vtx.size() > nMaxSize || ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION) > nMaxSize)
         return state.DoS(100, error("CheckBlock(): size limits failed"),
                          REJECT_INVALID, "bad-blk-length");
@@ -3071,7 +3071,7 @@ bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& sta
     return true;
 }
 
-bool ContextualCheckBlock(const CBlock& block, CValidationState& state, CBlockIndex * const pindexPrev)
+bool ContextualCheckBlock(const CBlock& block, CValidationState& state, CBlockIndex * const pindexPrev, bool fCheckPOW, bool fCheckMerkleRoot)
 {
     const int nHeight = pindexPrev == NULL ? 0 : pindexPrev->nHeight + 1;
     const Consensus::Params& consensusParams = Params().GetConsensus();
@@ -3095,6 +3095,29 @@ bool ContextualCheckBlock(const CBlock& block, CValidationState& state, CBlockIn
         if (block.vtx[0].vin[0].scriptSig.size() < expect.size() ||
             !std::equal(expect.begin(), expect.end(), block.vtx[0].vin[0].scriptSig.begin())) {
             return state.DoS(100, error("%s: block height mismatch in coinbase", __func__), REJECT_INVALID, "bad-cb-height");
+        }
+    }
+
+    // Enforce BIP102s softfork rules:
+    // (1) the coinbase MUST contain the merkle root of the remaining non-coinbase transactions; and
+    // (2) the empty block containing nothing but the coinbase tx MUST be valid under the old rules.
+    if (block.nTime >= BIP102_FORK_TIME)
+    {
+        bool mutated;
+        uint256 merkleRoot = BlockCoinbaseMerkleRoot(block, &mutated);
+        CScript expect = CScript() << nHeight << ToByteVector(merkleRoot);
+        if (block.vtx[0].vin[0].scriptSig.size() < expect.size() ||
+            !std::equal(expect.begin(), expect.end(), block.vtx[0].vin[0].scriptSig.begin())) {
+            return state.DoS(100, error("%s: merkle root mismatch in coinbase", __func__), REJECT_INVALID, "bad-cb-merkle-root");
+        }
+        if (mutated)
+            return state.DoS(100, error("%s: duplicate transaction", __func__), REJECT_INVALID, "bad-txns-duplicate", true);
+
+        CBlock legacyBlock(block.GetBlockHeader());
+        legacyBlock.vtx.push_back(block.vtx[0]);
+        bool fCheckLegacyBlock = true;
+        if (!CheckBlock(legacyBlock, state, fCheckPOW, fCheckMerkleRoot, fCheckLegacyBlock)) {
+            return false;
         }
     }
 

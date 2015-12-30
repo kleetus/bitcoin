@@ -9,6 +9,7 @@
 #include "uint256.h"
 #include "util.h"
 #include "consensus/consensus.h"
+#include "consensus/merkle.h"
 #include "consensus/validation.h"
 
 #include "test/test_bitcoin.h"
@@ -19,7 +20,7 @@ BOOST_FIXTURE_TEST_SUITE(block_size_tests, TestingSetup)
 
 // Fill block with dummy transactions until it's serialized size is exactly nSize
 static void
-FillBlock(CBlock& block, unsigned int nSize)
+FillBlock(CBlock& block, const CChainParams& chainparams, unsigned int nSize)
 {
     assert(block.vtx.size() > 0); // Start with at least a coinbase
 
@@ -58,15 +59,25 @@ FillBlock(CBlock& block, unsigned int nSize)
     block.vtx.push_back(tx);
     nBlockSize = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
     assert(nBlockSize == nSize);
+
+    // Fix the coinbase.
+    CBlockIndex* pindexPrev = chainActive.Tip();
+    int nHeight = pindexPrev == NULL ? 0 : pindexPrev->nHeight + 1;
+    uint256 merkleRoot = BlockCoinbaseMerkleRoot(block, NULL);
+    size_t size = block.vtx[0].vin[0].scriptSig.size();
+    const_cast<CScript&>(block.vtx[0].vin[0].scriptSig) = CScript() << nHeight << ToByteVector(merkleRoot) << OP_0;     // Probably not the right way of doing this...
+    assert(block.vtx[0].vin[0].scriptSig.size() == size);
 }
 
-static bool TestCheckBlock(CBlock& block, uint64_t nTime, unsigned int nSize)
+static bool TestCheckBlock(CBlock& block, const CChainParams& chainparams, uint64_t nTime, unsigned int nSize)
 {
     SetMockTime(nTime);
     block.nTime = nTime;
-    FillBlock(block, nSize);
+    FillBlock(block, chainparams, nSize);
     CValidationState validationState;
     bool fResult = CheckBlock(block, validationState, false, false) && validationState.IsValid();
+    CBlockIndex* pindexPrev = chainActive.Tip();
+    fResult = fResult && ContextualCheckBlock(block, validationState, pindexPrev, false, false) && validationState.IsValid();
     SetMockTime(0);
     return fResult;
 }
@@ -86,25 +97,25 @@ BOOST_AUTO_TEST_CASE(TwoMegFork)
     CBlock *pblock = &pblocktemplate->block;
 
     // Before fork time...
-    BOOST_CHECK(TestCheckBlock(*pblock, BIP102_FORK_TIME-1, 1000*1000)); // 1MB : valid
-    BOOST_CHECK(!TestCheckBlock(*pblock, BIP102_FORK_TIME-1, 1000*1000+1)); // >1MB : invalid
-    BOOST_CHECK(!TestCheckBlock(*pblock, BIP102_FORK_TIME-1, 2*1000*1000)); // 2MB : invalid
+    BOOST_CHECK(TestCheckBlock(*pblock, chainparams, BIP102_FORK_TIME-1, 1000*1000)); // 1MB : valid
+    BOOST_CHECK(!TestCheckBlock(*pblock, chainparams, BIP102_FORK_TIME-1, 1000*1000+1)); // >1MB : invalid
+    BOOST_CHECK(!TestCheckBlock(*pblock, chainparams, BIP102_FORK_TIME-1, 2*1000*1000)); // 2MB : invalid
 
     // Exactly at fork time...
-    BOOST_CHECK(TestCheckBlock(*pblock, BIP102_FORK_TIME, 1000*1000)); // 1MB : valid
-    BOOST_CHECK(TestCheckBlock(*pblock, BIP102_FORK_TIME, 2*1000*1000)); // 2MB : valid
-    BOOST_CHECK(!TestCheckBlock(*pblock, BIP102_FORK_TIME, 2*1000*1000+1)); // >2MB : invalid
+    BOOST_CHECK(TestCheckBlock(*pblock, chainparams, BIP102_FORK_TIME, 1000*1000)); // 1MB : valid
+    BOOST_CHECK(TestCheckBlock(*pblock, chainparams, BIP102_FORK_TIME, 2*1000*1000)); // 2MB : valid
+    BOOST_CHECK(!TestCheckBlock(*pblock, chainparams, BIP102_FORK_TIME, 2*1000*1000+1)); // >2MB : invalid
 
     // Fork height + 10 min...
-    BOOST_CHECK(!TestCheckBlock(*pblock, BIP102_FORK_TIME+600, 2*1000*1000+20)); // 2MB+20 : invalid
+    BOOST_CHECK(!TestCheckBlock(*pblock, chainparams, BIP102_FORK_TIME+600, 2*1000*1000+20)); // 2MB+20 : invalid
 
     // A year after fork time:
     unsigned int yearAfter = BIP102_FORK_TIME + (365 * 24 * 60 * 60);
-    BOOST_CHECK(TestCheckBlock(*pblock, yearAfter, 1000*1000)); // 1MB : valid
-    BOOST_CHECK(TestCheckBlock(*pblock, yearAfter, 2*1000*1000)); // 2MB : valid
-    BOOST_CHECK(!TestCheckBlock(*pblock, yearAfter, 2*1000*1000+1)); // >2MB : invalid
-    BOOST_CHECK(!TestCheckBlock(*pblock, yearAfter, 3*1000*1000)); // 3MB : invalid
-    BOOST_CHECK(!TestCheckBlock(*pblock, yearAfter, 4*1000*1000)); // 4MB : invalid
+    BOOST_CHECK(TestCheckBlock(*pblock, chainparams, yearAfter, 1000*1000)); // 1MB : valid
+    BOOST_CHECK(TestCheckBlock(*pblock, chainparams, yearAfter, 2*1000*1000)); // 2MB : valid
+    BOOST_CHECK(!TestCheckBlock(*pblock, chainparams, yearAfter, 2*1000*1000+1)); // >2MB : invalid
+    BOOST_CHECK(!TestCheckBlock(*pblock, chainparams, yearAfter, 3*1000*1000)); // 3MB : invalid
+    BOOST_CHECK(!TestCheckBlock(*pblock, chainparams, yearAfter, 4*1000*1000)); // 4MB : invalid
 }
 
 BOOST_AUTO_TEST_SUITE_END()

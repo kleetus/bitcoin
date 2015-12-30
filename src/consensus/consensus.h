@@ -11,8 +11,8 @@
 static const uint64_t BIP102_FORK_TIME = 1462406400; // May 5 2016, midnight UTC
 
 /** The maximum allowed size for a serialized block, in bytes (network rule) */
-inline unsigned int MaxBlockSize(uint64_t nTime) {
-    if (nTime < BIP102_FORK_TIME)
+inline unsigned int MaxBlockSize(uint64_t nTime, bool legacy = false) {
+    if (legacy || nTime < BIP102_FORK_TIME)
         return 1000*1000;
 
     return (2*1000*1000);

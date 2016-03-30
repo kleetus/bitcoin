@@ -113,6 +113,8 @@ struct CNodeSignals
 {
     boost::signals2::signal<int ()> GetHeight;
     boost::signals2::signal<bool (CNode*), CombinerAll> ProcessMessages;
+    boost::signals2::signal<bool (const CTransaction&)> TxToMemPool;
+    boost::signals2::signal<bool (const CTransaction&)> TxLeaveMemPool;
     boost::signals2::signal<bool (CNode*), CombinerAll> SendMessages;
     boost::signals2::signal<void (NodeId, const CNode*)> InitializeNode;
     boost::signals2::signal<void (NodeId)> FinalizeNode;

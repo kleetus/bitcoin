@@ -1,5 +1,8 @@
 DIST_SUBDIRS = secp256k1 univalue
 
+noinst_LTLIBRARIES = libbitcoind.la
+libbitcoind_la_LDFLAGS = -no-undefined
+
 AM_LDFLAGS = $(PTHREAD_CFLAGS) $(LIBTOOL_LDFLAGS) $(HARDENED_LDFLAGS)
 AM_CXXFLAGS = $(HARDENED_CXXFLAGS)
 AM_CPPFLAGS = $(HARDENED_CPPFLAGS)
@@ -37,7 +40,7 @@ LIBUNIVALUE=univalue/libunivalue.la
 
 $(LIBSECP256K1): $(wildcard secp256k1/src/*) $(wildcard secp256k1/include/*)
 	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C $(@D) $(@F)
-  
+
 $(LIBUNIVALUE): $(wildcard univalue/lib/*) $(wildcard univalue/include/*)
 	$(AM_V_at)$(MAKE) $(AM_MAKEFLAGS) -C $(@D) $(@F)
 
@@ -58,7 +61,7 @@ EXTRA_LIBRARIES += libbitcoin_zmq.a
 endif
 
 if BUILD_BITCOIN_LIBS
-lib_LTLIBRARIES = libbitcoinconsensus.la
+noinst_LTLIBRARIES += libbitcoinconsensus.la
 LIBBITCOIN_CONSENSUS=libbitcoinconsensus.la
 else
 LIBBITCOIN_CONSENSUS=
@@ -67,10 +70,6 @@ endif
 bin_PROGRAMS =
 TESTS =
 BENCHMARKS =
-
-if BUILD_BITCOIND
-  bin_PROGRAMS += bitcoind
-endif
 
 if BUILD_BITCOIN_UTILS
   bin_PROGRAMS += bitcoin-cli bitcoin-tx
@@ -329,12 +328,17 @@ nodist_libbitcoin_util_a_SOURCES = $(srcdir)/obj/build.h
 
 # bitcoind binary #
 bitcoind_SOURCES = bitcoind.cpp
+libbitcoind_la_SOURCES = $(bitcoind_SOURCES)
 bitcoind_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES)
+libbitcoind_la_CPPFLAGS = $(bitcoind_CPPFLAGS)
 bitcoind_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
+libbitcoind_la_CXXFLAGS = $(AM_CXXFLAGS)
 bitcoind_LDFLAGS = $(RELDFLAGS) $(AM_LDFLAGS) $(LIBTOOL_APP_LDFLAGS)
+libbitcoind_la_LDFLAGS += $(bitcoind_LDFLAGS)
 
 if TARGET_WINDOWS
 bitcoind_SOURCES += bitcoind-res.rc
+libbitcoind_la_SOURCES += bitcoind-res.rc
 endif
 
 bitcoind_LDADD = \
@@ -347,15 +351,20 @@ bitcoind_LDADD = \
   $(LIBMEMENV) \
   $(LIBSECP256K1)
 
+libbitcoind_la_LIBADD = $(LIBSECP256K1) $(LIBUNIVALUE) -lbitcoin_server -lbitcoin_common -lbitcoin_util -lbitcoin_crypto -lleveldb -lmemenv
+
 if ENABLE_ZMQ
 bitcoind_LDADD += $(LIBBITCOIN_ZMQ) $(ZMQ_LIBS)
+libbitcoind_la_LIBADD += -lzmq
 endif
 
 if ENABLE_WALLET
 bitcoind_LDADD += libbitcoin_wallet.a
+libbitcoind_la_LIBADD += -lbitcoin_wallet
 endif
 
 bitcoind_LDADD += $(BOOST_LIBS) $(BDB_LIBS) $(SSL_LIBS) $(CRYPTO_LIBS) $(MINIUPNPC_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS)
+libbitcoind_la_LIBADD += -levent_pthreads -levent_core -levent_extra -lboost_filesystem-mt -lboost_chrono -lboost_program_options-mt -lboost_system-mt -ldb_cxx-4.8 -lcrypto -lssl
 
 # bitcoin-cli binary #
 bitcoin_cli_SOURCES = bitcoin-cli.cpp

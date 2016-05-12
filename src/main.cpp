@@ -68,6 +68,7 @@ bool fTxIndex = false;
 bool fAddressIndex = false;
 bool fTimestampIndex = false;
 bool fSpentIndex = false;
+bool fInputIndex = false;
 bool fHavePruned = false;
 bool fPruneMode = false;
 bool fIsBareMultisigStd = DEFAULT_PERMIT_BAREMULTISIG;
@@ -1284,6 +1285,19 @@ bool GetAddressUnspent(uint160 addressHash, int type,
     return true;
 }
 
+bool GetInputIndex(const uint256 &hash, uint32_t index, CInputIndexValue &value) {
+
+	if (!fInputIndex)
+		return error("input index not enabled");
+
+	const CInputIndexKey inputKey(hash, index);
+
+	if (!pblocktree->ReadInputIndex(inputKey, value))
+		return error(
+				"unable to get input amount for txid and given input index");
+
+	return true;
+}
 /** Return transaction in tx, and if it was found inside a block, its hash is placed in hashBlock */
 bool GetTransaction(const uint256 &hash, CTransaction &txOut, const Consensus::Params& consensusParams, uint256 &hashBlock, bool fAllowSlow)
 {
@@ -1865,6 +1879,7 @@ bool DisconnectBlock(const CBlock& block, CValidationState& state, const CBlockI
     std::vector<std::pair<CAddressIndexKey, CAmount> > addressIndex;
     std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > addressUnspentIndex;
     std::vector<std::pair<CSpentIndexKey, CSpentIndexValue> > spentIndex;
+    std::vector<std::pair<CInputIndexKey, CAmount> > inputIndex;
 
     // undo transactions in reverse order
     for (int i = block.vtx.size() - 1; i >= 0; i--) {
@@ -1933,6 +1948,11 @@ bool DisconnectBlock(const CBlock& block, CValidationState& state, const CBlockI
                     fClean = false;
 
                 const CTxIn input = tx.vin[j];
+
+                if (fInputIndex) {
+                	//-1 means that we invalidated the cache for this input value, should this entry be pulled out?
+                    inputIndex.push_back(make_pair(CInputIndexKey(input.prevout.hash, input.prevout.n), -1));
+                }
 
                 if (fSpentIndex) {
                     // undo and delete the spent index
@@ -2197,6 +2217,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     std::vector<std::pair<CAddressIndexKey, CAmount> > addressIndex;
     std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > addressUnspentIndex;
     std::vector<std::pair<CSpentIndexKey, CSpentIndexValue> > spentIndex;
+    std::vector<std::pair<CInputIndexKey, CInputIndexValue> > inputIndex;
 
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
@@ -2215,11 +2236,44 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
                 return state.DoS(100, error("ConnectBlock(): inputs missing/spent"),
                                  REJECT_INVALID, "bad-txns-inputs-missingorspent");
 
-            if (fAddressIndex || fSpentIndex)
+            if (fAddressIndex || fSpentIndex || fInputIndex)
             {
                 for (size_t j = 0; j < tx.vin.size(); j++) {
 
                     const CTxIn input = tx.vin[j];
+                    if (fInputIndex) {
+                      //at this point, we are rolling over the inputs of each transaction and attempting to find the output that became this input object
+                      //the prevout is a COutPoint, which does not keep the nValue, bummer
+                      //in order to connect the block the output that spent the input must be in connected block? We can assume we have txindex turned on, this I am sure of
+                      //therefore if txindex is turned on, the we can query for it
+
+                      if (!fTxIndex) {
+                    	  return state.Error("ConnectBlock(): attempted to index inputs without a txindex");
+                      }
+                      CDiskTxPos postx;
+                      CTransaction prevTx;
+                      if (pblocktree->ReadTxIndex(input.prevout.hash, postx)) {
+                    	  CAutoFile file(OpenBlockFile(postx, true), SER_DISK, CLIENT_VERSION);
+                    	  if (file.IsNull())
+                    		  return error("%s: OpenBlockFile failed", __func__);
+                    	  CBlockHeader header;
+                    	  try {
+                    		  file >> header;
+                    		  fseek(file.Get(), postx.nTxOffset, SEEK_CUR);
+                    		  file >> prevTx;
+                    	  } catch (const std::exception& e) {
+                    		  return error(
+                    				  "%s: Deserialize or I/O error - %s",
+                    				  __func__, e.what());
+                    	  }
+                    	  uint256 hashBlock = header.GetHash();
+                    	  if (prevTx.GetHash() != input.prevout.hash)
+                    		  return state.Error("ConnectBlock(): fetching previous tx failed, provided txid did not match found txid");
+
+                    	  CAmount prevOutputAmount = (CAmount)(prevTx.vout[input.prevout.n].nValue * 1E8); //store as satoshis
+                    	  inputIndex.push_back(make_pair(CInputIndexKey(input.prevout.hash, input.prevout.n), prevOutputAmount));
+                      }
+                    }
 
                     if (fSpentIndex) {
                         // add the spent index to determine the txid and input that spent an output
@@ -2372,6 +2426,10 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     if (fTimestampIndex)
         if (!pblocktree->WriteTimestampIndex(CTimestampIndexKey(pindex->nTime, pindex->GetBlockHash())))
             return AbortNode(state, "Failed to write timestamp index");
+
+    if (fInputIndex)
+    	if (!pblocktree->UpdateInputIndex(inputIndex))
+    		return AbortNode(state, "Failed to write tx input index");
 
     // add this block to the view's block chain
     view.SetBestBlock(pindex->GetBlockHash());
@@ -3750,6 +3808,10 @@ bool static LoadBlockIndexDB()
     pblocktree->ReadFlag("spentindex", fSpentIndex);
     LogPrintf("%s: spent index %s\n", __func__, fSpentIndex ? "enabled" : "disabled");
 
+    // Check whether we have a input index
+    pblocktree->ReadFlag("inputindex", fInputIndex);
+    LogPrintf("%s: input index %s\n", __func__, fInputIndex ? "enabled" : "disabled");
+
     // Load pointer to end of best chain
     BlockMap::iterator it = mapBlockIndex.find(pcoinsTip->GetBestBlock());
     if (it == mapBlockIndex.end())
@@ -3893,7 +3955,7 @@ bool LoadBlockIndex()
     return true;
 }
 
-bool InitBlockIndex(const CChainParams& chainparams) 
+bool InitBlockIndex(const CChainParams& chainparams)
 {
     LOCK(cs_main);
 
@@ -3918,6 +3980,9 @@ bool InitBlockIndex(const CChainParams& chainparams)
 
     fSpentIndex = GetBoolArg("-spentindex", DEFAULT_SPENTINDEX);
     pblocktree->WriteFlag("spentindex", fSpentIndex);
+
+    fInputIndex = GetBoolArg("-inputindex", DEFAULT_INPUTINDEX);
+    pblocktree->WriteFlag("inputindex", fInputIndex);
 
     LogPrintf("Initializing databases...\n");
 

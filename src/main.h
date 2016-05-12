@@ -108,6 +108,7 @@ static const bool DEFAULT_TXINDEX = false;
 static const bool DEFAULT_ADDRESSINDEX = false;
 static const bool DEFAULT_TIMESTAMPINDEX = false;
 static const bool DEFAULT_SPENTINDEX = false;
+static const bool DEFAULT_INPUTINDEX =  false;
 static const unsigned int DEFAULT_BANSCORE_THRESHOLD = 100;
 
 static const bool DEFAULT_TESTSAFEMODE = false;
@@ -620,6 +621,54 @@ struct CAddressIndexIteratorHeightKey {
     }
 };
 
+struct CInputIndexKey {
+	uint256 txhash;
+	uint32_t vin;
+
+	size_t GetSerializeSize(int nType, int nVersion) const {
+		return 36;
+	}
+
+	template<typename Stream>
+	void Serialize(Stream& s, int nType, int nVersion) const {
+		txhash.Serialize(s, nType, nVersion);
+		ser_writedata32be(s, vin);
+	}
+
+	CInputIndexKey() {
+		txhash.SetNull();
+		vin = 0;
+	}
+
+	CInputIndexKey(uint256 hash, uint32_t input) {
+		txhash = hash;
+		vin = input;
+	}
+};
+
+struct CInputIndexValue {
+	CAmount satoshis;
+
+	ADD_SERIALIZE_METHODS;
+
+	template <typename Stream, typename Operation>
+	inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
+		READWRITE(satoshis);
+	}
+
+	CInputIndexValue(CAmount sats) {
+		satoshis = sats;
+	}
+
+	CInputIndexValue() {
+		satoshis = -1;
+	}
+
+	bool IsNull() const {
+		return (satoshis == -1);
+	}
+};
+
 struct CDiskTxPos : public CDiskBlockPos
 {
     unsigned int nTxOffset; // after header
@@ -733,6 +782,7 @@ bool GetAddressIndex(uint160 addressHash, int type,
                      int start = 0, int end = 0);
 bool GetAddressUnspent(uint160 addressHash, int type,
                        std::vector<std::pair<CAddressUnspentKey, CAddressUnspentValue> > &unspentOutputs);
+bool GetInputIndex(const uint256 &hash, uint32_t index, CInputIndexValue &value);
 
 /** Functions for disk access for blocks */
 bool WriteBlockToDisk(const CBlock& block, CDiskBlockPos& pos, const CMessageHeader::MessageStartChars& messageStart);

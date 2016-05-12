@@ -26,6 +26,8 @@ struct CTimestampIndexKey;
 struct CTimestampIndexIteratorKey;
 struct CSpentIndexKey;
 struct CSpentIndexValue;
+struct CInputIndexKey;
+struct CInputIndexValue;
 class uint256;
 
 //! -dbcache default (MiB)
@@ -78,6 +80,8 @@ public:
                           int start = 0, int end = 0);
     bool WriteTimestampIndex(const CTimestampIndexKey &timestampIndex);
     bool ReadTimestampIndex(const unsigned int &high, const unsigned int &low, std::vector<uint256> &vect);
+    bool ReadInputIndex(const CInputIndexKey &key, CInputIndexValue &value);
+    bool UpdateInputIndex(const std::vector<std::pair<CInputIndexKey, CInputIndexValue> >&vect);
     bool WriteFlag(const std::string &name, bool fValue);
     bool ReadFlag(const std::string &name, bool &fValue);
     bool LoadBlockIndexGuts();

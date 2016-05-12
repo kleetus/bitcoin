@@ -59,6 +59,24 @@ void ScriptPubKeyToJSON(const CScript& scriptPubKey, UniValue& out, bool fInclud
     out.push_back(Pair("addresses", a));
 }
 
+int64_t ComputeFees(const CTransaction &tx) {
+	if (!tx.IsCoinBase()) {
+		CAmount inputsAmount = 0;
+		for (uint32_t i = 0; i < tx.vin.size(); ++i) {
+			CInputIndexValue indexValue;
+			if (GetInputIndex(tx.GetHash(), i, indexValue)) {
+				assert(indexValue.satoshis > 0);
+				inputsAmount += indexValue.satoshis;
+			} else {
+				return -1; //means there is no index for this information
+			}
+		}
+		return inputsAmount - tx.GetValueOut();
+	} else {
+		return 0;
+	}
+}
+
 void TxToJSON(const CTransaction& tx, const uint256 hashBlock, UniValue& entry)
 {
     uint256 txid = tx.GetHash();
@@ -66,6 +84,7 @@ void TxToJSON(const CTransaction& tx, const uint256 hashBlock, UniValue& entry)
     entry.push_back(Pair("size", (int)::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION)));
     entry.push_back(Pair("version", tx.nVersion));
     entry.push_back(Pair("locktime", (int64_t)tx.nLockTime));
+    entry.push_back(Pair("fee", ComputeFees(tx)));
     UniValue vin(UniValue::VARR);
     BOOST_FOREACH(const CTxIn& txin, tx.vin) {
         UniValue in(UniValue::VOBJ);
@@ -183,6 +202,7 @@ UniValue getrawtransaction(const UniValue& params, bool fHelp)
             "  \"confirmations\" : n,      (numeric) The confirmations\n"
             "  \"time\" : ttt,             (numeric) The transaction time in seconds since epoch (Jan 1 1970 GMT)\n"
             "  \"blocktime\" : ttt         (numeric) The block time in seconds since epoch (Jan 1 1970 GMT)\n"
+            "  \"fee\" : n,	(numeric) The fee for the transaction. If there was an error attempting to get fees, then -1 is returned, otherwise the actual fees (>= 0) will be returned\n"
             "}\n"
 
             "\nExamples:\n"

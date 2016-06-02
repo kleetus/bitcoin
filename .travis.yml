@@ -21,7 +21,7 @@ env:
     - CCACHE_TEMPDIR=/tmp/.ccache-temp
     - CCACHE_COMPRESS=1
     - BASE_OUTDIR=$TRAVIS_BUILD_DIR/out
-    - SDK_URL=https://$macsdk_user:$macsdk_passwd@nonlinearlife.com/mac/MacOSX10.9.sdk.tar.gz
+    - SDK_URL=https://$macsdk_user:$macsdk_passwd@nonlinearlife.com/mac
     - PYTHON_DEBUG=1
     - WINEDEBUG=fixme-all
 cache:

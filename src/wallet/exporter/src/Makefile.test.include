@@ -1,4 +1,0 @@
-TESTS = exporter_test.c
-bin_PROGRAMS += exporter_test
-TEST_SRCDIR = . 
-TEST_BINARY = exporter_test

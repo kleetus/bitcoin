@@ -9,143 +9,92 @@
 
 #include <boost/filesystem.hpp>
 
-#include <leveldb/cache.h>
-#include <leveldb/env.h>
-#include <leveldb/filter_policy.h>
-#include <memenv.h>
 #include <stdint.h>
 
-static leveldb::Options GetOptions(size_t nCacheSize, bool compression, int maxOpenFiles)
+CDBWrapper::CDBWrapper(const boost::filesystem::path& path, size_t nCacheSize, bool fMemory, bool fWipe, bool obfuscate, bool compression, int maxOpenFiles, int mapSize, int maxReaders)
 {
-    leveldb::Options options;
-    options.block_cache = leveldb::NewLRUCache(nCacheSize / 2);
-    options.write_buffer_size = nCacheSize / 4; // up to two write buffers may be held in memory simultaneously
-    options.filter_policy = leveldb::NewBloomFilterPolicy(10);
-    options.compression = compression ? leveldb::kSnappyCompression : leveldb::kNoCompression;
-    options.max_open_files = maxOpenFiles;
-    if (leveldb::kMajorVersion > 1 || (leveldb::kMajorVersion == 1 && leveldb::kMinorVersion >= 16)) {
-        // LevelDB versions before 1.16 consider short writes to be corruption. Only trigger error
-        // on corruption in later versions.
-        options.paranoid_checks = true;
-    }
-    return options;
-}
+  TryCreateDirectory(path);
+  LogPrintf("Opening LMDB in %s\n", path.string());
 
-CDBWrapper::CDBWrapper(const boost::filesystem::path& path, size_t nCacheSize, bool fMemory, bool fWipe, bool obfuscate, bool compression, int maxOpenFiles)
-{
-    penv = NULL;
-    readoptions.verify_checksums = true;
-    iteroptions.verify_checksums = true;
-    iteroptions.fill_cache = false;
-    syncoptions.sync = true;
-    options = GetOptions(nCacheSize, compression, maxOpenFiles);
-    options.create_if_missing = true;
-    if (fMemory) {
-        penv = leveldb::NewMemEnv(leveldb::Env::Default());
-        options.env = penv;
-    } else {
-        if (fWipe) {
-            LogPrintf("Wiping LevelDB in %s\n", path.string());
-            leveldb::Status result = leveldb::DestroyDB(path.string(), options);
-            dbwrapper_private::HandleError(result);
-        }
-        TryCreateDirectory(path);
-        LogPrintf("Opening LevelDB in %s\n", path.string());
-    }
-    leveldb::Status status = leveldb::DB::Open(options, path.string(), &pdb);
-    dbwrapper_private::HandleError(status);
-    LogPrintf("Opened LevelDB successfully\n");
+  dbwrapper_private::HandleError(mdb_env_create(&env)); 
 
-    // The base-case obfuscation key, which is a noop.
-    obfuscate_key = std::vector<unsigned char>(OBFUSCATE_KEY_NUM_BYTES, '\000');
+  //set options
+  dbwrapper_private::HandleError(mdb_env_set_mapsize(env, mapSize)); 
+  dbwrapper_private::HandleError(mdb_env_set_maxreaders(env, maxReaders)); 
 
-    bool key_exists = Read(OBFUSCATE_KEY_KEY, obfuscate_key);
+  dbwrapper_private::HandleError(mdb_env_open(env, path.c_str(), 0, 0644)); 
+  dbwrapper_private::HandleError(mdb_txn_begin(env, NULL, 0, &ptxn)); 
+  dbwrapper_private::HandleError(mdb_dbi_open(ptxn, NULL, MDB_CREATE, &dbi)); 
 
-    if (!key_exists && obfuscate && IsEmpty()) {
-        // Initialize non-degenerate obfuscation if it won't upset
-        // existing, non-obfuscated data.
-        std::vector<unsigned char> new_key = CreateObfuscateKey();
-
-        // Write `new_key` so we don't obfuscate the key with itself
-        Write(OBFUSCATE_KEY_KEY, new_key);
-        obfuscate_key = new_key;
-
-        LogPrintf("Wrote new obfuscate key for %s: %s\n", path.string(), HexStr(obfuscate_key));
-    }
-
-    LogPrintf("Using obfuscation key for %s: %s\n", path.string(), HexStr(obfuscate_key));
+  LogPrintf("Opened LMDB successfully");
 }
 
 CDBWrapper::~CDBWrapper()
 {
-    delete pdb;
-    pdb = NULL;
-    delete options.filter_policy;
-    options.filter_policy = NULL;
-    delete options.block_cache;
-    options.block_cache = NULL;
-    delete penv;
-    options.env = NULL;
+  if (dbi) {
+    mdb_dbi_close(env, dbi);
+  }
+  if (txn) {
+    mdb_txn_commit(txn);
+  }
+  if (env) {
+    mdb_env_close(env);
+  }
+  LogPrintf("Closed LMDB successfully");
 }
 
 bool CDBWrapper::WriteBatch(CDBBatch& batch, bool fSync)
 {
-    leveldb::Status status = pdb->Write(fSync ? syncoptions : writeoptions, &batch.batch);
-    dbwrapper_private::HandleError(status);
-    return true;
+
 }
 
-// Prefixed with null character to avoid collisions with other keys
-//
-// We must use a string constructor which specifies length so that we copy
-// past the null-terminator.
-const std::string CDBWrapper::OBFUSCATE_KEY_KEY("\000obfuscate_key", 14);
-
-const unsigned int CDBWrapper::OBFUSCATE_KEY_NUM_BYTES = 8;
-
-/**
- * Returns a string (consisting of 8 random bytes) suitable for use as an
- * obfuscating XOR key.
- */
-std::vector<unsigned char> CDBWrapper::CreateObfuscateKey() const
+  template <typename K, typename V>
+bool CDBWrapper::Write(const K& key, const V& value, bool fSync)
 {
-    unsigned char buff[OBFUSCATE_KEY_NUM_BYTES];
-    GetRandBytes(buff, OBFUSCATE_KEY_NUM_BYTES);
-    return std::vector<unsigned char>(&buff[0], &buff[OBFUSCATE_KEY_NUM_BYTES]);
-
+  MDB_txn *txn;
+  MDB_val key, data;
+  key.mv_size = sizeof(skey);
+  key.mv_data = (char *)skey;
+  data.mv_size = sizeof(svalue);
+  data.mv_data = (char *)svalue;
+  dbwrapper_private::HandleError(mdb_txn_begin(this->env, ptxn, 0, &txn)); 
+  dbwrapper_private::HandleError(mdb_put(txn, dbi, &key, &data, 0)); 
+  dbwrapper_private::HandleError(mdb_txn_commit(txn)); 
 }
 
 bool CDBWrapper::IsEmpty()
 {
-    boost::scoped_ptr<CDBIterator> it(NewIterator());
-    it->SeekToFirst();
-    return !(it->Valid());
+  bool ret = false;
+  MDB_cursor *cur;
+  MDB_val key, data;
+  char val[32];
+  dbwrapper_private::HandleError(mdb_cursor_open(ptxn, dbi, &cur)); 
+  printf("address of: %p\n", &ptxn);  
+  key.mv_size = sizeof(int);
+  key.mv_data = val;
+  data.mv_size = sizeof(val);
+  data.mv_data = val;
+  int res = mdb_cursor_get(cur, &key, &data, MDB_FIRST); 
+  if (res == MDB_NOTFOUND) {
+    ret = true;
+  }
+  mdb_cursor_close(cur);
+  return ret;
 }
 
-CDBIterator::~CDBIterator() { delete piter; }
-bool CDBIterator::Valid() { return piter->Valid(); }
-void CDBIterator::SeekToFirst() { piter->SeekToFirst(); }
-void CDBIterator::Next() { piter->Next(); }
+CDBIterator::~CDBIterator() {}
+bool CDBIterator::Valid() {}
+void CDBIterator::SeekToFirst() {}
+void CDBIterator::Next() {}
 
 namespace dbwrapper_private {
 
-void HandleError(const leveldb::Status& status)
+void HandleError(int error)
 {
-    if (status.ok())
-        return;
-    LogPrintf("%s\n", status.ToString());
-    if (status.IsCorruption())
-        throw dbwrapper_error("Database corrupted");
-    if (status.IsIOError())
-        throw dbwrapper_error("Database I/O error");
-    if (status.IsNotFound())
-        throw dbwrapper_error("Database entry missing");
-    throw dbwrapper_error("Unknown database error");
-}
-
-const std::vector<unsigned char>& GetObfuscateKey(const CDBWrapper &w)
-{
-    return w.obfuscate_key;
+  if(error != 0) {
+    printf("error num was: %d\n", error);
+    throw dbwrapper_error("Database could not accessed");
+  } 
 }
 
 };
